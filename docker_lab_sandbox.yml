@@ -1,0 +1,38 @@
+---
+  - name: Start Master Container (Module)
+    docker_container:
+      name: master-{{ master_name }}
+      hostname: master-{{ master_name }}
+      image: dind:latest
+      state: started
+      published_ports: all
+      env: PORT=8080
+      privileged: True
+    tags:
+      - scaleup
+      - m_startup
+
+  - name: Extract IP Address for Master Container
+    command: "docker inspect --format {% raw %} '{{ .NetworkSettings.IPAddress }}' {% endraw %} master-{{ master_name }}"
+    register: master_ip_address
+    tags:
+      - m_startup
+      - cli_startup
+
+  - name: Connection forwarding into bashrc
+    lineinfile:
+      dest: /home/dockerlabuser{{ master_name }}/.bashrc
+      line: "sudo docker exec -ti master-{{ master_name }} bash;exit"
+      state: present
+    tags:
+      - scaleup 
+      - m_startup
+      - cli_startup
+
+  - name: Remove Master Containers (Module)
+    docker_container:
+      name: master-{{ master_name }}
+      state: absent
+    tags:
+      - scaledown
+      - m_shutdown

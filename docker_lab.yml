@@ -1,0 +1,144 @@
+#!/usr/bin/env ansible-playbook
+
+- hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    users: 1
+    slaves: 1
+    cidr: "172.18.1.1/20"
+
+  tasks:
+    - name: Baseline Machine
+      yum: name={{ item }} state=present
+      with_items:
+        - docker
+        - python-pip
+        - python-docker-py
+      tags:
+        - baseline
+
+    - name: Start Docker Engine
+      service: name=docker state=started
+      tags:
+        - baseline
+
+    - name: Backup existing SSH config
+      copy: src=/etc/ssh/ssh_config dest=/etc/ssh/ssh_config_backup
+      tags:
+        - ssh
+        - backup_ssh
+        - baseline
+
+    - name: Create group for lab users
+      group:
+           name=dockerlab
+           state=present
+      tags:
+        - group
+        - baseline
+
+    - name: Create docker lab user, home with default password, ssh keys - loop
+      user:
+          name={{ item }}
+          comment={{ item }}
+          password={{ item | password_hash('sha512') }}
+          home=/home/{{ item }}
+          group=dockerlab
+          generate_ssh_key=yes
+          ssh_key_file=.ssh/id_rsa
+          update_password=always
+          state=present
+      with_sequence: start=1 end={{ users }} format=dockerlabuser%d
+      tags:
+        - users
+        - baseline
+
+    - name: unlock sshd_config
+      command: chattr -i /etc/ssh/sshd_config
+      changed_when: yes
+      tags:
+        - ssh
+        - users
+        - baseline
+
+    - name: insert users in sshd allowedusers
+      replace:
+        dest: /etc/ssh/sshd_config
+        regexp: '^(AllowUsers(?!.*\b{{ item }}\b).*)$'
+        replace: '\1 {{ item }}'
+      with_sequence: start=1 end={{ users }} format=dockerlabuser%d
+      tags:
+        - ssh
+        - users
+        - baseline
+
+    - name: lock sshd_config
+      command: chattr +i /etc/ssh/sshd_config
+      changed_when: yes
+      tags:
+        - ssh
+        - users
+        - baseline
+
+    - name: Build Master Image (Module)
+      docker_image:
+        path: dind
+        dockerfile: Dockerfile
+        state: present
+        name: dind
+        tag: latest
+      tags:
+        - m_startup
+        - m_build_images
+
+    - include: docker_lab_sandbox.yml
+      with_sequence: start=1 end={{ users }}
+      loop_control:
+        loop_var: master_name
+
+    - name: Remove docker lab users
+      user:
+        name={{ item }}
+        state=absent
+        force=yes
+        remove=yes
+      with_sequence: start=1 end={{ users }} format=dockerlabuser%d
+      tags:
+        - remove_users
+        - remove_baseline
+
+    - name: Remove docker lab user group
+      group:
+        name=dockerlab
+        state=absent
+      tags:
+        - remove_group
+        - remove_baseline
+
+    - name: Unlock sshd_config
+      command: chattr -i /etc/ssh/sshd_config
+      changed_when: yes
+      tags:
+        - revert_ssh
+        - remove_users
+        - remove_baseline
+
+    - name: Delete docker lab users from sshd allowedusers
+      replace:
+        dest: /etc/ssh/sshd_config
+        regexp: '{{ item }}\s?\b'
+        replace: ''
+      with_sequence: start=1 end={{ users }} format=dockerlabuser%d
+      tags:
+        - revert_ssh
+        - remove_users
+        - remove_baseline
+
+    - name: Lock sshd_config
+      command: chattr +i /etc/ssh/sshd_config
+      changed_when: yes
+      tags:
+        - revert_ssh
+        - remove_users
+        - remove_baseline
